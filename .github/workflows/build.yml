@@ -46,15 +46,23 @@ jobs:
             echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
           fi
 
+      - name: Locate the Gradle project folder
+        run: |
+          SETTINGS=$(find . -maxdepth 3 -name settings.gradle.kts -not -path "./.git/*" | head -n 1)
+          if [ -z "$SETTINGS" ]; then echo "settings.gradle.kts not found - files were not uploaded correctly"; exit 1; fi
+          DIR=$(dirname "$SETTINGS")
+          echo "Project folder: $DIR"
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+
       - name: Build release APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle assembleRelease --no-daemon --console=plain
+        run: gradle -p "$PROJECT_DIR" assembleRelease --no-daemon --console=plain
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk PlaylisX.apk
+        run: cp "$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk" PlaylisX.apk
 
       - uses: actions/upload-artifact@v4
         with:
