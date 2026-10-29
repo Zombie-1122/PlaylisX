@@ -1,0 +1,80 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Make sure a debug keystore exists (fallback signing)
+        run: |
+          mkdir -p ~/.android
+          [ -f ~/.android/debug.keystore ] || keytool -genkey -v -keystore ~/.android/debug.keystore \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Decode release keystore (optional secret)
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk PlaylisX.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PlaylisX-apk
+          path: PlaylisX.apk
+
+      # Every push to main updates a "latest" release with a direct APK download link
+      - name: Publish latest build
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: PlaylisX (latest build)
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          files: PlaylisX.apk
+
+      # Version tags (v1.0.0 etc.) create a normal release
+      - name: Publish versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PlaylisX.apk
