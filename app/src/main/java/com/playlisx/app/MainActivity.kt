@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -62,6 +65,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -82,6 +86,15 @@ class MainActivity : ComponentActivity() {
 fun App(vm: MainViewModel = viewModel()) {
     var tab by rememberSaveable { mutableStateOf(0) }
     val snack = remember { SnackbarHostState() }
+    var seenLoad by rememberSaveable { mutableStateOf(0) }
+
+    // After a playlist is loaded, jump to the Text tab so the full playlist is shown right away.
+    LaunchedEffect(vm.loadTick) {
+        if (vm.loadTick != seenLoad) {
+            seenLoad = vm.loadTick
+            if (vm.loadTick > 0) tab = 2
+        }
+    }
 
     LaunchedEffect(vm.message) {
         val m = vm.message
@@ -107,6 +120,7 @@ fun App(vm: MainViewModel = viewModel()) {
                 val items = listOf(
                     "Import" to Icons.Default.Add,
                     "Edit" to Icons.Default.Edit,
+                    "Text" to Icons.Default.Menu,
                     "Check" to Icons.Default.Check,
                     "Export" to Icons.Default.Share
                 )
@@ -125,7 +139,8 @@ fun App(vm: MainViewModel = viewModel()) {
             when (tab) {
                 0 -> ImportTab(vm) { openFile.launch(arrayOf("*/*")) }
                 1 -> EditTab(vm)
-                2 -> CheckTab(vm)
+                2 -> TextTab(vm)
+                3 -> CheckTab(vm)
                 else -> ExportTab(vm) { saveFile.launch(vm.currentFileName()) }
             }
         }
@@ -269,6 +284,7 @@ fun EditTab(vm: MainViewModel) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        if (vm.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         Section("Find & replace") {
             Field(vm.rule.find, { vm.rule = vm.rule.copy(find = it) }, "Find")
             Field(vm.rule.replace, { vm.rule = vm.rule.copy(replace = it) }, "Replace with")
@@ -292,7 +308,7 @@ fun EditTab(vm: MainViewModel) {
 
         Section("Smart cleanup") {
             CleanupPreset.values().forEach { pr ->
-                OutlinedButton(onClick = { vm.previewCleanup(pr) }, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { vm.previewCleanup(pr) }, enabled = !vm.busy, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.fillMaxWidth()) {
                         Text(pr.label, fontWeight = FontWeight.Bold)
                         Text(pr.desc, fontSize = 12.sp, color = Muted)
@@ -320,6 +336,104 @@ fun EditTab(vm: MainViewModel) {
             Field(vm.tvg.epgUrl, { vm.tvg = vm.tvg.copy(epgUrl = it) }, "EPG / XMLTV URL (url-tvg)")
             Button(onClick = { vm.previewTvg() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Preview changes")
+            }
+        }
+
+        Section("Billed message (added at end of playlist)") {
+            Text(
+                "Adds one entry as the last channel. Running it again replaces the entry that has the same stream URL.",
+                color = Muted,
+                fontSize = 12.sp
+            )
+            Field(vm.notice.message, { vm.notice = vm.notice.copy(message = it) }, "Message text")
+            Field(vm.notice.group, { vm.notice = vm.notice.copy(group = it) }, "Group name")
+            Field(vm.notice.logo, { vm.notice = vm.notice.copy(logo = it) }, "Logo URL")
+            Field(vm.notice.url, { vm.notice = vm.notice.copy(url = it) }, "Stream URL (placeholder)")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { vm.previewNotice() }, modifier = Modifier.weight(1f)) { Text("Add / replace") }
+                OutlinedButton(onClick = { vm.previewRemoveNotice() }, modifier = Modifier.weight(1f)) { Text("Remove") }
+            }
+        }
+
+        Section("Group logo") {
+            val groups = remember(vm.playlist) {
+                vm.playlist?.channels?.map { it.group }?.filter { it.isNotEmpty() }?.distinct()?.sorted() ?: emptyList()
+            }
+            Field(vm.groupLogo.group, { vm.groupLogo = vm.groupLogo.copy(group = it) }, "Group name")
+            if (groups.isNotEmpty()) {
+                Text("Tap a group to select it", color = Muted, fontSize = 12.sp)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    groups.take(60).forEach { g ->
+                        OutlinedButton(onClick = { vm.groupLogo = vm.groupLogo.copy(group = g) }) {
+                            Text(g, maxLines = 1, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+            Field(vm.groupLogo.logo, { vm.groupLogo = vm.groupLogo.copy(logo = it) }, "Logo URL")
+            Check("Only where logo is missing", vm.groupLogo.onlyMissing, Modifier.fillMaxWidth()) {
+                vm.groupLogo = vm.groupLogo.copy(onlyMissing = it)
+            }
+            Check("Also write group-logo attribute", vm.groupLogo.alsoGroupAttr, Modifier.fillMaxWidth()) {
+                vm.groupLogo = vm.groupLogo.copy(alsoGroupAttr = it)
+            }
+            Button(onClick = { vm.previewGroupLogo() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Preview changes")
+            }
+        }
+    }
+}
+
+@Composable
+fun TextTab(vm: MainViewModel) {
+    val p = vm.playlist
+    if (p == null) {
+        Empty()
+        return
+    }
+    val pages = TextPaging.pageCount(p.channels.size)
+    val page = vm.textPage
+    val original = remember(p, page) { TextPaging.render(p, page) }
+    val draft = vm.textDraft
+    val text = draft ?: original
+    val dirty = draft != null && draft != original
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (vm.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Section("Playlist text") {
+            Text(
+                if (pages > 1) "Page ${page + 1} of $pages \u00B7 ${p.channels.size} channels (large playlists are shown in pages)"
+                else "${p.channels.size} channels \u00B7 full playlist",
+                color = Muted,
+                fontSize = 12.sp
+            )
+            if (pages > 1) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { vm.setTextPage(page - 1) }, enabled = page > 0 && !dirty) { Text("Prev") }
+                    OutlinedButton(onClick = { vm.setTextPage(page + 1) }, enabled = page < pages - 1 && !dirty) { Text("Next") }
+                    if (dirty) Text("Preview or reset edits first", color = Muted, fontSize = 12.sp)
+                }
+            }
+            OutlinedTextField(
+                value = text,
+                onValueChange = { vm.textDraft = it },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 360.dp),
+                textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.previewTextEdit(text) },
+                    enabled = dirty && !vm.busy,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Preview changes") }
+                OutlinedButton(
+                    onClick = { vm.textDraft = null },
+                    enabled = dirty,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Reset") }
             }
         }
     }
@@ -470,7 +584,9 @@ fun PendingDialog(p: Pending, onApply: () -> Unit, onCancel: () -> Unit) {
                 Text(p.summary, fontSize = 13.sp)
                 Spacer(Modifier.height(10.dp))
                 p.samples.forEach { s ->
-                    Text("- ${s.before}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Muted)
+                    if (s.before != null) {
+                        Text("- ${s.before}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Muted)
+                    }
                     if (s.after != null) {
                         Text("+ ${s.after}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Gold)
                     } else {
