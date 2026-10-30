@@ -23,29 +23,25 @@ object Exporter {
         )
     )
 
-    val FULL: ExportProfile get() = BUILT_IN[0]
-
-    fun renderChannels(channels: List<Channel>, e: ExportProfile): String {
+    fun render(p: Playlist, e: ExportProfile): String {
         val sb = StringBuilder()
+        sb.append(p.header.ifBlank { "#EXTM3U" }).append('\n')
         val keep: (String) -> Boolean = { k ->
             when (k) {
-                "tvg-logo", "group-logo" -> e.logos
+                "tvg-logo" -> e.logos
                 "tvg-id" -> e.tvgIds
                 "tvg-name" -> e.tvgNames
                 "group-title" -> e.groups
                 else -> e.other
             }
         }
-        for (c in channels) {
+        for (c in p.channels) {
             sb.append(M3u.extinf(c, keep)).append('\n')
             if (e.extras) c.extras.forEach { sb.append(it).append('\n') }
             sb.append(c.url).append('\n')
         }
         return sb.toString()
     }
-
-    fun render(p: Playlist, e: ExportProfile): String =
-        p.header.ifBlank { "#EXTM3U" } + "\n" + renderChannels(p.channels, e)
 
     private fun clean(s: String) = s.replace('|', ' ').replace('\n', ' ').trim()
     private fun b(x: Boolean) = if (x) "1" else "0"
@@ -61,24 +57,5 @@ object Exporter {
             name = f[0], logos = f[1] == "1", tvgIds = f[2] == "1", tvgNames = f[3] == "1",
             groups = f[4] == "1", extras = f[5] == "1", other = f[6] == "1", fileName = f[7]
         )
-    }
-}
-
-object TextPaging {
-    fun pageSize(n: Int): Int = if (n <= 400) maxOf(n, 1) else 200
-
-    fun pageCount(n: Int): Int = if (n == 0) 1 else (n + pageSize(n) - 1) / pageSize(n)
-
-    fun range(n: Int, page: Int): IntRange {
-        val size = pageSize(n)
-        val from = (page * size).coerceIn(0, n)
-        val to = minOf(from + size, n)
-        return from until to
-    }
-
-    fun render(p: Playlist, page: Int): String {
-        val r = range(p.channels.size, page)
-        val body = Exporter.renderChannels(p.channels.subList(r.first, r.last + 1), Exporter.FULL)
-        return if (page == 0) p.header.ifBlank { "#EXTM3U" } + "\n" + body else body
     }
 }

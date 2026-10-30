@@ -16,7 +16,7 @@ data class Playlist(
     val warnings: List<String> = emptyList()
 )
 
-data class Sample(val before: String?, val after: String?)
+data class Sample(val before: String, val after: String?)
 
 data class Pending(
     val label: String,
