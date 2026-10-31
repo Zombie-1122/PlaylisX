@@ -267,7 +267,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         stageAsync("Group logo") { Rules.applyGroupLogo(it, g) }
     }
 
-    fun setTextPage(i: Int) {
+    fun goToTextPage(i: Int) {
         val total = playlist?.channels?.size ?: 0
         textPage = i.coerceIn(0, (TextPaging.pageCount(total) - 1).coerceAtLeast(0))
         textDraft = null

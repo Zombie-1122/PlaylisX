@@ -410,8 +410,8 @@ fun TextTab(vm: MainViewModel) {
             )
             if (pages > 1) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = { vm.setTextPage(page - 1) }, enabled = page > 0 && !dirty) { Text("Prev") }
-                    OutlinedButton(onClick = { vm.setTextPage(page + 1) }, enabled = page < pages - 1 && !dirty) { Text("Next") }
+                    OutlinedButton(onClick = { vm.goToTextPage(page - 1) }, enabled = page > 0 && !dirty) { Text("Prev") }
+                    OutlinedButton(onClick = { vm.goToTextPage(page + 1) }, enabled = page < pages - 1 && !dirty) { Text("Next") }
                     if (dirty) Text("Preview or reset edits first", color = Muted, fontSize = 12.sp)
                 }
             }
