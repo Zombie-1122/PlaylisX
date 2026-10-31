@@ -4,11 +4,13 @@ package com.playlisx.app
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,7 +32,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -62,6 +68,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -81,7 +88,24 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun App(vm: MainViewModel = viewModel()) {
     var tab by rememberSaveable { mutableStateOf(0) }
+    var screen by rememberSaveable { mutableStateOf(0) }       // 0 = main tabs, 1 = groups, 2 = edit channel
+    var editIndex by rememberSaveable { mutableStateOf(-1) }   // -1 = new channel
+    var sheetIndex by rememberSaveable { mutableStateOf(-1) }  // channel whose action sheet is open
+    var showImport by remember { mutableStateOf(false) }
+    var seenLoad by rememberSaveable { mutableStateOf(0) }
     val snack = remember { SnackbarHostState() }
+
+    // After a playlist is loaded, show the channel list.
+    LaunchedEffect(vm.loadTick) {
+        if (vm.loadTick != seenLoad) {
+            seenLoad = vm.loadTick
+            if (vm.loadTick > 0) {
+                tab = 0
+                screen = 0
+                showImport = false
+            }
+        }
+    }
 
     LaunchedEffect(vm.message) {
         val m = vm.message
@@ -97,38 +121,86 @@ fun App(vm: MainViewModel = viewModel()) {
     val saveFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/x-mpegurl")) { uri ->
         if (uri != null) vm.saveTo(uri)
     }
+    val pickFile: () -> Unit = { openFile.launch(arrayOf("*/*")) }
 
-    Scaffold(
-        containerColor = Ink,
-        snackbarHost = { SnackbarHost(snack) },
-        topBar = { TopBar(vm) },
-        bottomBar = {
-            NavigationBar(containerColor = Panel) {
-                val items = listOf(
-                    "Import" to Icons.Default.Add,
-                    "Edit" to Icons.Default.Edit,
-                    "Check" to Icons.Default.Check,
-                    "Export" to Icons.Default.Share
-                )
-                items.forEachIndexed { i, (label, icon) ->
-                    NavigationBarItem(
-                        selected = tab == i,
-                        onClick = { tab = i },
-                        icon = { Icon(icon, contentDescription = label) },
-                        label = { Text(label) }
-                    )
+    BackHandler(enabled = screen != 0 || showImport) {
+        if (showImport) showImport = false else screen = 0
+    }
+
+    Box(Modifier.fillMaxSize().background(Ink)) {
+        when (screen) {
+            1 -> GroupsScreen(vm) { screen = 0 }
+            2 -> EditChannelScreen(vm, editIndex, vm.groupFilter.orEmpty()) { screen = 0 }
+            else -> Scaffold(
+                containerColor = Ink,
+                topBar = { TopBar(vm) },
+                bottomBar = {
+                    NavigationBar(containerColor = Panel) {
+                        val items = listOf(
+                            "Channels" to Icons.Default.List,
+                            "Tools" to Icons.Default.Build,
+                            "Text" to Icons.Default.Edit,
+                            "Check" to Icons.Default.Check,
+                            "Export" to Icons.Default.Share
+                        )
+                        items.forEachIndexed { i, (label, icon) ->
+                            NavigationBarItem(
+                                selected = tab == i,
+                                onClick = { tab = i },
+                                icon = { Icon(icon, contentDescription = label) },
+                                label = { Text(label, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+            ) { pad ->
+                Box(Modifier.padding(pad).fillMaxSize()) {
+                    when (tab) {
+                        0 -> ChannelsTab(
+                            vm,
+                            onOpenGroups = { screen = 1 },
+                            onImport = { showImport = true },
+                            onPickFile = pickFile,
+                            onChannel = { sheetIndex = it },
+                            onAdd = {
+                                editIndex = -1
+                                screen = 2
+                            }
+                        )
+                        1 -> EditTab(vm)
+                        2 -> TextTab(vm)
+                        3 -> CheckTab(vm)
+                        else -> ExportTab(vm) { saveFile.launch(vm.currentFileName()) }
+                    }
                 }
             }
         }
-    ) { pad ->
-        Box(Modifier.padding(pad).fillMaxSize()) {
-            when (tab) {
-                0 -> ImportTab(vm) { openFile.launch(arrayOf("*/*")) }
-                1 -> EditTab(vm)
-                2 -> CheckTab(vm)
-                else -> ExportTab(vm) { saveFile.launch(vm.currentFileName()) }
+        SnackbarHost(
+            snack,
+            Modifier.align(Alignment.BottomCenter).padding(bottom = if (screen == 0) 88.dp else 16.dp)
+        )
+    }
+
+    if (sheetIndex >= 0 && screen == 0) {
+        ChannelActionsSheet(
+            vm,
+            sheetIndex,
+            onDismiss = { sheetIndex = -1 },
+            onEdit = {
+                editIndex = sheetIndex
+                screen = 2
             }
-        }
+        )
+    }
+
+    if (showImport) {
+        AlertDialog(
+            onDismissRequest = { showImport = false },
+            containerColor = Panel,
+            title = { Text("Load playlist", color = Gold) },
+            text = { ImportControls(vm, pickFile) },
+            confirmButton = { TextButton(onClick = { showImport = false }) { Text("Close") } }
+        )
     }
 
     val pd = vm.pending
@@ -172,13 +244,13 @@ fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-fun Field(value: String, onChange: (String) -> Unit, label: String) {
+fun Field(value: String, onChange: (String) -> Unit, label: String, modifier: Modifier = Modifier.fillMaxWidth()) {
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
         label = { Text(label) },
         singleLine = true,
-        modifier = Modifier.fillMaxWidth()
+        modifier = modifier
     )
 }
 
@@ -198,66 +270,7 @@ fun Empty() {
     }
 }
 
-@Composable
-fun ChannelRow(c: Channel) {
-    Column(Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp)).padding(10.dp)) {
-        Text(
-            c.name.ifEmpty { "(no name)" },
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            listOf(c.group, c.url).filter { it.isNotEmpty() }.joinToString("  \u00B7  "),
-            color = Muted,
-            fontSize = 12.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
 // ---------- tabs ----------
-
-@Composable
-fun ImportTab(vm: MainViewModel, onPick: () -> Unit) {
-    val p = vm.playlist
-    val groupCount = remember(p) {
-        p?.channels?.map { it.group }?.filter { it.isNotEmpty() }?.toSet()?.size ?: 0
-    }
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            Section("Playlist source") {
-                Field(vm.url, { vm.url = it }, "Playlist URL (http/https)")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { vm.fetchUrl() }, enabled = !vm.busy, modifier = Modifier.weight(1f)) {
-                        Text("Fetch URL")
-                    }
-                    OutlinedButton(onClick = onPick, enabled = !vm.busy, modifier = Modifier.weight(1f)) {
-                        Text("Import file")
-                    }
-                }
-                if (vm.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            }
-        }
-        if (p != null) {
-            item {
-                Section("Loaded") {
-                    Text(vm.source)
-                    Text("${p.channels.size} channels \u00B7 $groupCount groups", color = Muted)
-                }
-            }
-            items(p.channels.take(100)) { c -> ChannelRow(c) }
-            if (p.channels.size > 100) {
-                item { Text("Showing first 100 of ${p.channels.size}", color = Muted, fontSize = 12.sp) }
-            }
-        }
-    }
-}
 
 @Composable
 fun EditTab(vm: MainViewModel) {
@@ -269,7 +282,8 @@ fun EditTab(vm: MainViewModel) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Section("Find & replace") {
+        if (vm.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Collapsible("Find & replace", "Rebrand names, groups and logos", 0) {
             Field(vm.rule.find, { vm.rule = vm.rule.copy(find = it) }, "Find")
             Field(vm.rule.replace, { vm.rule = vm.rule.copy(replace = it) }, "Replace with")
             Row {
@@ -290,9 +304,9 @@ fun EditTab(vm: MainViewModel) {
             }
         }
 
-        Section("Smart cleanup") {
+        Collapsible("Smart cleanup", "Light, Standard and Deep presets", 0) {
             CleanupPreset.values().forEach { pr ->
-                OutlinedButton(onClick = { vm.previewCleanup(pr) }, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { vm.previewCleanup(pr) }, enabled = !vm.busy, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.fillMaxWidth()) {
                         Text(pr.label, fontWeight = FontWeight.Bold)
                         Text(pr.desc, fontSize = 12.sp, color = Muted)
@@ -301,7 +315,7 @@ fun EditTab(vm: MainViewModel) {
             }
         }
 
-        Section("TVG settings") {
+        Collapsible("TVG settings", "tvg-id, tvg-name, logos, EPG URL", 0) {
             Check("Set tvg-name from channel name", vm.tvg.syncTvgName, Modifier.fillMaxWidth()) {
                 vm.tvg = vm.tvg.copy(syncTvgName = it)
             }
@@ -320,6 +334,104 @@ fun EditTab(vm: MainViewModel) {
             Field(vm.tvg.epgUrl, { vm.tvg = vm.tvg.copy(epgUrl = it) }, "EPG / XMLTV URL (url-tvg)")
             Button(onClick = { vm.previewTvg() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Preview changes")
+            }
+        }
+
+        Collapsible("Billed message", "Message entry at the end of the playlist", 0) {
+            Text(
+                "Adds one entry as the last channel. Running it again replaces the entry that has the same stream URL.",
+                color = Muted,
+                fontSize = 12.sp
+            )
+            Field(vm.notice.message, { vm.notice = vm.notice.copy(message = it) }, "Message text")
+            Field(vm.notice.group, { vm.notice = vm.notice.copy(group = it) }, "Group name")
+            Field(vm.notice.logo, { vm.notice = vm.notice.copy(logo = it) }, "Logo URL")
+            Field(vm.notice.url, { vm.notice = vm.notice.copy(url = it) }, "Stream URL (placeholder)")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { vm.previewNotice() }, modifier = Modifier.weight(1f)) { Text("Add / replace") }
+                OutlinedButton(onClick = { vm.previewRemoveNotice() }, modifier = Modifier.weight(1f)) { Text("Remove") }
+            }
+        }
+
+        Collapsible("Group logo", "Set a logo for a whole group", 0) {
+            val groups = remember(vm.playlist) {
+                vm.playlist?.channels?.map { it.group }?.filter { it.isNotEmpty() }?.distinct()?.sorted() ?: emptyList()
+            }
+            Field(vm.groupLogo.group, { vm.groupLogo = vm.groupLogo.copy(group = it) }, "Group name")
+            if (groups.isNotEmpty()) {
+                Text("Tap a group to select it", color = Muted, fontSize = 12.sp)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    groups.take(60).forEach { g ->
+                        OutlinedButton(onClick = { vm.groupLogo = vm.groupLogo.copy(group = g) }) {
+                            Text(g, maxLines = 1, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+            Field(vm.groupLogo.logo, { vm.groupLogo = vm.groupLogo.copy(logo = it) }, "Logo URL")
+            Check("Only where logo is missing", vm.groupLogo.onlyMissing, Modifier.fillMaxWidth()) {
+                vm.groupLogo = vm.groupLogo.copy(onlyMissing = it)
+            }
+            Check("Also write group-logo attribute", vm.groupLogo.alsoGroupAttr, Modifier.fillMaxWidth()) {
+                vm.groupLogo = vm.groupLogo.copy(alsoGroupAttr = it)
+            }
+            Button(onClick = { vm.previewGroupLogo() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Preview changes")
+            }
+        }
+    }
+}
+
+@Composable
+fun TextTab(vm: MainViewModel) {
+    val p = vm.playlist
+    if (p == null) {
+        Empty()
+        return
+    }
+    val pages = TextPaging.pageCount(p.channels.size)
+    val page = vm.textPage
+    val original = remember(p, page) { TextPaging.render(p, page) }
+    val draft = vm.textDraft
+    val text = draft ?: original
+    val dirty = draft != null && draft != original
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (vm.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Section("Playlist text") {
+            Text(
+                if (pages > 1) "Page ${page + 1} of $pages \u00B7 ${p.channels.size} channels (large playlists are shown in pages)"
+                else "${p.channels.size} channels \u00B7 full playlist",
+                color = Muted,
+                fontSize = 12.sp
+            )
+            if (pages > 1) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { vm.setTextPage(page - 1) }, enabled = page > 0 && !dirty) { Text("Prev") }
+                    OutlinedButton(onClick = { vm.setTextPage(page + 1) }, enabled = page < pages - 1 && !dirty) { Text("Next") }
+                    if (dirty) Text("Preview or reset edits first", color = Muted, fontSize = 12.sp)
+                }
+            }
+            OutlinedTextField(
+                value = text,
+                onValueChange = { vm.textDraft = it },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 360.dp),
+                textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.previewTextEdit(text) },
+                    enabled = dirty && !vm.busy,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Preview changes") }
+                OutlinedButton(
+                    onClick = { vm.textDraft = null },
+                    enabled = dirty,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Reset") }
             }
         }
     }
@@ -412,7 +524,7 @@ fun ExportTab(vm: MainViewModel, onSave: () -> Unit) {
         }
 
         Section("Output") {
-            Text("${p.channels.size} channels \u00B7 ${vm.currentFileName()}", color = Muted, fontSize = 13.sp)
+            Text("${p.channels.count { !it.hidden }} channels \u00B7 ${vm.currentFileName()}", color = Muted, fontSize = 13.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { vm.copy(ctx) }, modifier = Modifier.weight(1f)) { Text("Copy") }
                 Button(onClick = { vm.share(ctx) }, modifier = Modifier.weight(1f)) { Text("Share") }
@@ -470,7 +582,9 @@ fun PendingDialog(p: Pending, onApply: () -> Unit, onCancel: () -> Unit) {
                 Text(p.summary, fontSize = 13.sp)
                 Spacer(Modifier.height(10.dp))
                 p.samples.forEach { s ->
-                    Text("- ${s.before}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Muted)
+                    if (s.before != null) {
+                        Text("- ${s.before}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Muted)
+                    }
                     if (s.after != null) {
                         Text("+ ${s.after}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Gold)
                     } else {

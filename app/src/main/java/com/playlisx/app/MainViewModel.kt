@@ -36,6 +36,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         .readTimeout(45, TimeUnit.SECONDS)
         .build()
 
+    private val quickClient = client.newBuilder()
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .callTimeout(12, TimeUnit.SECONDS)
+        .build()
+
     var playlist by mutableStateOf<Playlist?>(null)
         private set
     var source by mutableStateOf("")
@@ -55,10 +61,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var redoCount by mutableIntStateOf(0)
         private set
+    var loadTick by mutableIntStateOf(0)
+        private set
 
     var url by mutableStateOf(prefs.getString("lastUrl", "") ?: "")
     var rule by mutableStateOf(ReplaceRule())
     var tvg by mutableStateOf(TvgSettings())
+    var notice by mutableStateOf(
+        NoticeSettings(
+            message = prefs.getString("n_msg", "") ?: "",
+            group = prefs.getString("n_group", "Info") ?: "Info",
+            logo = prefs.getString("n_logo", "") ?: "",
+            url = prefs.getString("n_url", "http://127.0.0.1/notice") ?: "http://127.0.0.1/notice"
+        )
+    )
+    var groupLogo by mutableStateOf(GroupLogoSettings())
+    var sourceKind by mutableStateOf("FILE")
+        private set
+    var groupFilter by mutableStateOf<String?>(null)
+    var search by mutableStateOf("")
+    var showHidden by mutableStateOf(false)
+    var textPage by mutableIntStateOf(0)
+        private set
+    var textDraft by mutableStateOf<String?>(null)
 
     var profiles by mutableStateOf(loadProfiles())
         private set
@@ -84,7 +109,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             busy = false
             r.onSuccess {
                 prefs.edit().putString("lastUrl", u).apply()
-                load(it, Uri.parse(u).host ?: u)
+                load(it, Uri.parse(u).host ?: u, "URL")
             }.onFailure {
                 message = "Download failed: ${it.message ?: it.javaClass.simpleName}"
             }
@@ -113,12 +138,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             busy = false
-            r.onSuccess { load(it.first, it.second) }
+            r.onSuccess { load(it.first, it.second, "FILE") }
                 .onFailure { message = "Could not read file: ${it.message ?: it.javaClass.simpleName}" }
         }
     }
 
-    private fun load(p: Playlist, label: String) {
+    private fun load(p: Playlist, label: String, kind: String) {
         if (p.channels.isEmpty()) {
             message = "No channels found. Is this an M3U/M3U8 playlist?"
             return
@@ -127,13 +152,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         redoStack.clear()
         playlist = p
         source = label
+        sourceKind = kind
+        groupFilter = null
+        search = ""
         deadUrls = emptySet()
         pingProgress = ""
+        textPage = 0
         refresh()
+        loadTick++
         message = "Loaded ${p.channels.size} channels"
     }
 
     private fun refresh() {
+        textDraft = null
+        playlist?.let { cur ->
+            val gf = groupFilter
+            if (gf != null && cur.channels.none { it.group == gf }) groupFilter = null
+        }
+        val total = playlist?.channels?.size ?: 0
+        textPage = textPage.coerceIn(0, (TextPaging.pageCount(total) - 1).coerceAtLeast(0))
         undoCount = undoStack.size
         redoCount = redoStack.size
         val p = playlist
@@ -146,14 +183,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- edits with preview / undo ----------
 
-    private fun stage(label: String, result: Playlist) {
+    private fun stageAsync(label: String, work: (Playlist) -> Playlist) {
         val p = playlist ?: return
-        val pd = Diff.make(label, p, result)
-        if (pd == null) message = "Nothing would change" else pending = pd
+        if (busy) return
+        busy = true
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.Default) { runCatching { Diff.make(label, p, work(p)) } }
+            busy = false
+            r.onSuccess { pd ->
+                if (pd == null) {
+                    message = "Nothing would change"
+                } else {
+                    pending = pd
+                }
+            }.onFailure {
+                message = "$label failed: ${it.message ?: it.javaClass.simpleName}"
+            }
+        }
     }
 
     fun previewReplace() {
-        val p = playlist ?: return
+        if (playlist == null) return
         if (rule.find.isEmpty()) {
             message = "Enter text to find"
             return
@@ -162,22 +212,204 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             message = "Invalid pattern"
             return
         }
-        stage("Find & replace", Rules.replace(p, rule))
+        val r = rule
+        stageAsync("Find & replace") { Rules.replace(it, r) }
     }
 
     fun previewCleanup(preset: CleanupPreset) {
-        val p = playlist ?: return
-        stage("Cleanup: ${preset.label}", Cleanup.apply(p, preset))
+        stageAsync("Cleanup: ${preset.label}") { Cleanup.apply(it, preset) }
     }
 
     fun previewTvg() {
-        val p = playlist ?: return
-        stage("TVG settings", Rules.applyTvg(p, tvg))
+        val t = tvg
+        stageAsync("TVG settings") { Rules.applyTvg(it, t) }
     }
 
     fun previewRemoveDead() {
+        val dead = deadUrls
+        stageAsync("Remove dead streams") { p -> p.copy(channels = p.channels.filter { it.url !in dead }) }
+    }
+
+    fun previewNotice() {
+        val n = notice
+        if (n.message.isBlank()) {
+            message = "Enter the message text"
+            return
+        }
+        if (n.url.isBlank()) {
+            message = "Enter a stream URL"
+            return
+        }
+        prefs.edit()
+            .putString("n_msg", n.message)
+            .putString("n_group", n.group)
+            .putString("n_logo", n.logo)
+            .putString("n_url", n.url)
+            .apply()
+        stageAsync("Billed message") { Rules.applyNotice(it, n) }
+    }
+
+    fun previewRemoveNotice() {
+        val n = notice
+        if (n.url.isBlank()) {
+            message = "Enter the stream URL of the message entry"
+            return
+        }
+        stageAsync("Remove message entry") { Rules.removeNotice(it, n) }
+    }
+
+    fun previewGroupLogo() {
+        val g = groupLogo
+        if (g.group.isBlank() || g.logo.isBlank()) {
+            message = "Enter a group name and a logo URL"
+            return
+        }
+        stageAsync("Group logo") { Rules.applyGroupLogo(it, g) }
+    }
+
+    fun setTextPage(i: Int) {
+        val total = playlist?.channels?.size ?: 0
+        textPage = i.coerceIn(0, (TextPaging.pageCount(total) - 1).coerceAtLeast(0))
+        textDraft = null
+    }
+
+    fun previewTextEdit(text: String) {
         val p = playlist ?: return
-        stage("Remove dead streams", p.copy(channels = p.channels.filter { it.url !in deadUrls }))
+        val page = textPage
+        val r = TextPaging.range(p.channels.size, page)
+        val from = r.first
+        val to = r.last + 1
+        stageAsync("Text edit") { cur ->
+            val parsed = M3u.parse(text)
+            val hasHeader = text.lineSequence().any { it.trim().startsWith("#EXTM3U") }
+            val merged = cur.channels.subList(0, from) + parsed.channels + cur.channels.subList(to, cur.channels.size)
+            cur.copy(header = if (page == 0 && hasHeader) parsed.header else cur.header, channels = merged)
+        }
+    }
+
+    // ---------- direct edits (single channel / group). No preview; Undo restores them ----------
+
+    private fun commit(label: String, np: Playlist) {
+        val cur = playlist ?: return
+        undoStack.addLast(cur)
+        if (undoStack.size > 30) undoStack.removeFirst()
+        redoStack.clear()
+        playlist = np
+        refresh()
+        message = label
+    }
+
+    private fun withGroup(c: Channel, g: String): Channel {
+        val n = g.trim()
+        return c.copy(attrs = if (n.isEmpty()) c.attrs - "group-title" else c.attrs + ("group-title" to n))
+    }
+
+    private fun withHidden(c: Channel, hide: Boolean): Channel {
+        val ex = c.extras.filter { it != HIDDEN_MARK }
+        return c.copy(extras = if (hide) ex + HIDDEN_MARK else ex)
+    }
+
+    fun saveChannel(index: Int, ch: Channel) {
+        val p = playlist ?: return
+        val list = p.channels.toMutableList()
+        if (index in list.indices) {
+            list[index] = ch
+            commit("Channel saved", p.copy(channels = list))
+        } else {
+            list.add(ch)
+            commit("Channel added", p.copy(channels = list))
+        }
+    }
+
+    fun duplicateChannel(index: Int) {
+        val p = playlist ?: return
+        val c = p.channels.getOrNull(index) ?: return
+        val list = p.channels.toMutableList()
+        list.add(index + 1, c.copy(name = c.name + " (copy)"))
+        commit("Duplicated ${c.name}", p.copy(channels = list))
+    }
+
+    fun deleteChannel(index: Int) {
+        val p = playlist ?: return
+        val c = p.channels.getOrNull(index) ?: return
+        commit("Deleted ${c.name} (Undo is in the top bar)", p.copy(channels = p.channels.filterIndexed { i, _ -> i != index }))
+    }
+
+    fun toggleHidden(index: Int) {
+        val p = playlist ?: return
+        val c = p.channels.getOrNull(index) ?: return
+        val list = p.channels.toMutableList()
+        list[index] = withHidden(c, !c.hidden)
+        commit(if (c.hidden) "Channel unhidden" else "Channel hidden (left out of exports)", p.copy(channels = list))
+    }
+
+    fun moveToGroup(index: Int, group: String) {
+        val p = playlist ?: return
+        val c = p.channels.getOrNull(index) ?: return
+        val list = p.channels.toMutableList()
+        list[index] = withGroup(c, group)
+        commit("Moved to ${group.trim().ifEmpty { "no group" }}", p.copy(channels = list))
+    }
+
+    fun setPosition(index: Int, position: Int) {
+        val p = playlist ?: return
+        if (index !in p.channels.indices) return
+        val list = p.channels.toMutableList()
+        val c = list.removeAt(index)
+        list.add((position - 1).coerceIn(0, list.size), c)
+        commit("Moved to position ${list.indexOf(c) + 1}", p.copy(channels = list))
+    }
+
+    fun renameGroup(old: String, new: String) {
+        val p = playlist ?: return
+        val n = new.trim()
+        val wasSelected = groupFilter == old
+        commit("Group renamed", p.copy(channels = p.channels.map { if (it.group == old) withGroup(it, n) else it }))
+        if (wasSelected) groupFilter = n
+    }
+
+    fun deleteGroup(name: String) {
+        val p = playlist ?: return
+        commit("Group deleted", p.copy(channels = p.channels.filter { it.group != name }))
+    }
+
+    fun hideGroup(name: String, hide: Boolean) {
+        val p = playlist ?: return
+        commit(
+            if (hide) "Group hidden (left out of exports)" else "Group shown",
+            p.copy(channels = p.channels.map { if (it.group == name) withHidden(it, hide) else it })
+        )
+    }
+
+    fun moveGroup(name: String, delta: Int, toTop: Boolean = false) {
+        val p = playlist ?: return
+        val order = p.channels.map { it.group }.distinct().toMutableList()
+        val i = order.indexOf(name)
+        if (i < 0) return
+        val j = if (toTop) 0 else (i + delta).coerceIn(0, order.lastIndex)
+        if (j == i) return
+        order.removeAt(i)
+        order.add(j, name)
+        val rank = HashMap<String, Int>()
+        order.forEachIndexed { k, g -> rank[g] = k }
+        commit("Group moved", p.copy(channels = p.channels.sortedBy { rank[it.group] ?: 0 }))
+    }
+
+    fun checkUrl(u: String) {
+        if (u.isBlank()) return
+        message = "Checking stream..."
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val req = Request.Builder().url(u.trim()).header("User-Agent", "PlaylisX/1.0 (Android)").build()
+                    quickClient.newCall(req).execute().use { it.code }
+                }
+            }
+            message = r.fold(
+                { if (it in 200..399) "Stream responds (HTTP $it)" else "Server answered HTTP $it" },
+                { "Not responding: ${it.message ?: it.javaClass.simpleName}" }
+            )
+        }
     }
 
     fun applyPending() {

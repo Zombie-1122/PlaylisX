@@ -1,5 +1,8 @@
 package com.playlisx.app
 
+/** A channel is "hidden" when this marker line is in its extras. Hidden channels are left out of exports. */
+const val HIDDEN_MARK = "#PLAYLISX-HIDDEN"
+
 data class Channel(
     val duration: String = "-1",
     val attrs: Map<String, String> = emptyMap(),
@@ -8,6 +11,7 @@ data class Channel(
     val extras: List<String> = emptyList()
 ) {
     val group: String get() = attrs["group-title"].orEmpty()
+    val hidden: Boolean get() = extras.contains(HIDDEN_MARK)
 }
 
 data class Playlist(
@@ -16,7 +20,7 @@ data class Playlist(
     val warnings: List<String> = emptyList()
 )
 
-data class Sample(val before: String, val after: String?)
+data class Sample(val before: String?, val after: String?)
 
 data class Pending(
     val label: String,
